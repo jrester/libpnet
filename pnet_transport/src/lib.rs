@@ -55,7 +55,7 @@ pub enum TransportChannelType {
     /// The application will send and receive transport layer packets.
     Layer4(TransportProtocol),
     /// The application will send and receive IPv4 packets, with the specified transport protocol.
-    Layer3(IpNextHeaderProtocol),
+    Layer3(TransportProtocol),
 }
 
 /// Structure used for sending at the transport layer. Should be created with `transport_channel()`.
@@ -102,10 +102,10 @@ pub fn transport_channel(
 
     let socket = unsafe {
         match channel_type {
-            Layer4(Ipv4(IpNextHeaderProtocol(proto))) | Layer3(IpNextHeaderProtocol(proto)) => {
+            Layer4(Ipv4(IpNextHeaderProtocol(proto))) | Layer3(Ipv4(IpNextHeaderProtocol(proto))) => {
                 pnet_sys::socket(pnet_sys::AF_INET, pnet_sys::SOCK_RAW, proto as libc::c_int)
             }
-            Layer4(Ipv6(IpNextHeaderProtocol(proto))) => {
+            Layer4(Ipv6(IpNextHeaderProtocol(proto))) | Layer3(Ipv6(IpNextHeaderProtocol(proto))) => {
                 pnet_sys::socket(pnet_sys::AF_INET6, pnet_sys::SOCK_RAW, proto as libc::c_int)
             }
         }
@@ -114,30 +114,31 @@ pub fn transport_channel(
         return Err(Error::last_os_error());
     }
 
-    if match channel_type {
-        Layer3(_) | Layer4(Ipv4(_)) => true,
-        _ => false,
-    } {
-        let hincl: libc::c_int = match channel_type {
-            Layer4(..) => 0,
-            _ => 1,
-        };
-        let res = unsafe {
-            pnet_sys::setsockopt(
-                socket,
-                pnet_sys::IPPROTO_IP,
-                pnet_sys::IP_HDRINCL,
-                (&hincl as *const libc::c_int) as pnet_sys::Buf,
-                mem::size_of::<libc::c_int>() as pnet_sys::SockLen,
-            )
-        };
-        if res == -1 {
-            let err = Error::last_os_error();
-            unsafe {
-                pnet_sys::close(socket);
-            }
-            return Err(err);
+    let (level, optname) = match channel_type {
+        Layer4(Ipv4(_))  | Layer3(Ipv4(_)) => (pnet_sys::SOL_IP, pnet_sys::IP_HDRINCL),
+        Layer4(Ipv6(_)) | Layer3(Ipv6(_)) => (pnet_sys::SOL_IPV6, pnet_sys::IPV6_HDRINCL) 
+    };
+
+    let hincl: libc::c_int = match channel_type {
+        Layer4(..) => 0,
+        _ => 1,
+    };
+
+    let res = unsafe {
+        pnet_sys::setsockopt(
+            socket,
+            level,
+            optname,
+            (&hincl as *const libc::c_int) as pnet_sys::Buf,
+            mem::size_of::<libc::c_int>() as pnet_sys::SockLen,
+        )
+    };
+    if res == -1 {
+        let err = Error::last_os_error();
+        unsafe {
+            pnet_sys::close(socket);
         }
+        return Err(err);
     }
 
     let sock = Arc::new(pnet_sys::FileDesc { fd: socket });
